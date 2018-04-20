@@ -55,7 +55,7 @@ void run(void* structs, int n)
 
 	int tasks_completed = 0;
 	int task_index = 0;
-	//give everyone there first task
+	//give everyone their first task
 	for(int i = 1; i < size && i < n; i++)
 	{
 		struct sample strc = *(((struct sample*) structs) + task_index);
