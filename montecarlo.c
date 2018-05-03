@@ -2,27 +2,28 @@
 #include <stdlib.h>
 #include <math.h>
 #include <mpi.h>
+#include <time.h>
 
-int DEBUG = 0;
+int DEBUG = 1;
 int size;
 MPI_Datatype mpi_struct;
 
-typedef struct sample{
-  double in;
-  double out;
-  int index;
-} smpl;
+typedef struct montcar{
+  int hits; 
+  double out; //best guess at pi
+  int num_sims;
+} mntcr;
 
 void commit_struct()
 {
 	const int num_elements=3;
 	int element_lens[3] = {1,1,1};
-	MPI_Datatype types[3] = {MPI_DOUBLE, MPI_DOUBLE, MPI_INT};
+	MPI_Datatype types[3] = {MPI_INT, MPI_DOUBLE, MPI_INT};
 	MPI_Aint offsets[3];
 
-	offsets[0] = offsetof(smpl, in);
-	offsets[1] = offsetof(smpl, out);
-	offsets[2] = offsetof(smpl, index);
+	offsets[0] = offsetof(mntcr, hits);
+	offsets[1] = offsetof(mntcr, out);
+	offsets[2] = offsetof(mntcr, num_sims);
 
 	MPI_Type_create_struct(num_elements, element_lens, offsets, types, &mpi_struct);
 	MPI_Type_commit(&mpi_struct);
@@ -51,18 +52,20 @@ void send_home(int rank){
 //note: structs may not be returned in the order they are given
 void run(void* structs, int n)
 {
+	if(DEBUG == 1) printf("Starting run with %d structs\n", n);
+
 	int cmd = 3;
 
 	int tasks_completed = 0;
 	int task_index = 0;
-	//give everyone there first task
-	for(int i = 1; i < size && i < n; i++)
+	//give everyone their first task
+	for(int i = 0; i < size-1 && i < n; i++)
 	{
-		struct sample strc = *(((struct sample*) structs) + task_index);
+		struct montcar strc = *(((struct montcar*) structs) + task_index);
 
-		MPI_Send(&cmd, 1, MPI_INT, i, 0, MPI_COMM_WORLD); //send command number
-		printf("Sending struct\n");
-		MPI_Send(&strc, 1, mpi_struct, i, 0, MPI_COMM_WORLD); //send struct
+		MPI_Send(&cmd, 1, MPI_INT, i+1, 0, MPI_COMM_WORLD); //send command number
+		if (DEBUG == 1) printf("Sending struct %d with command %d\n", i, cmd);
+		MPI_Send(&strc, 1, mpi_struct, i+1, 0, MPI_COMM_WORLD); //send struct
 
 		task_index++;
 	}
@@ -74,47 +77,59 @@ void run(void* structs, int n)
 	{
 
 		//MPI_Recv(&task, 1, MPI_INT, src, tag, MPI_COMM_WORLD, &status);
-		MPI_Recv((((struct sample*) structs) + tasks_completed), 1, mpi_struct, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+		MPI_Recv((((struct montcar*) structs) + tasks_completed), 1, mpi_struct, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+		if(DEBUG == 1) printf("Got a result! Sending another! task_index: %d tasks_completed: %d \n", task_index, tasks_completed);
+		if(DEBUG == 1) printf("From this result, we got PI EST: %f\n", (((struct montcar*) structs) + tasks_completed)->out);
 		tasks_completed++;
 
-		struct sample strc = *(((struct sample*) structs) + task_index);
+
+
+		struct montcar strc = *(((struct montcar*) structs) + task_index);
 
 		MPI_Send(&cmd, 1, MPI_INT, status.MPI_SOURCE, 0, MPI_COMM_WORLD); //send command number
 		MPI_Send(&strc, 1, mpi_struct, status.MPI_SOURCE, 0, MPI_COMM_WORLD);
-
 		task_index++;
 	}
 
 	//wait for responses
 	while(tasks_completed < n) 
 	{
-		MPI_Recv((((struct sample*) structs) + tasks_completed), 1, mpi_struct, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+		MPI_Recv((((struct montcar*) structs) + tasks_completed), 1, mpi_struct, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+		if(DEBUG == 1) printf("Got a results! task_index: %d tasks_completed: %d\n", task_index, tasks_completed);
+		if(DEBUG == 1) printf("From this result, we got PI EST: %f\n", (((struct montcar*) structs) + tasks_completed)->out);
 		tasks_completed++;
+
+		
 	}
 }
 
 //prepares structs to be ran
 void start_run(int rank)
 {
-	struct sample* tests = malloc(sizeof(struct sample)*100);
+	int num_tests = (size-1)*40;
 
-	printf("before==============================================\n");
-	for(int i = 0; i < 100; i++)
+	if (DEBUG == 1) printf("Starting run with size %d\n", size);
+	struct montcar* tests = malloc(sizeof(struct montcar)*num_tests);
+
+	for(int i = 0; i < num_tests; i++)
 	{
-		tests[i].in = i;
+		tests[i].hits = 0;
 		tests[i].out = 0;
-		tests[i].index = i;
-
-		printf("in: %f out: %f index: %d\n", tests[i].in, tests[i].out, tests[i].index);
+		tests[i].num_sims = 1000000000;
 	}
 
-	run((void *) tests, 100);
+	run((void *) tests, num_tests);
 
-	printf("after==============================================\n");
-	for(int i = 0; i < 100; i++)
+	//average pi (assume all have the same num_sims)
+	double average = 0;
+	for(int i = 0; i < num_tests; i++)
 	{
-		printf("in: %f out: %f index: %d\n", tests[i].in, tests[i].out, tests[i].index);
+		average = average + (((struct montcar*) tests) + i)->out;
+		if(DEBUG == 1) printf("Result for test[%d]: PI est=%f\n", i, tests[i].out);
 	}
+	average = average / ((double) num_tests);
+
+	printf("\n\n\nPi estimate: %f\n\n\n", average);
 
 	free(tests);
 
@@ -133,6 +148,8 @@ void select_task(int rank, int src)
 	int task = 0;
 	MPI_Recv(&task, 1, MPI_INT, src, tag, MPI_COMM_WORLD, &status);
 
+	if (DEBUG == 1) printf("Rank %d got task %d\n", rank, task);
+
 	switch(task)
 	{
 		//Go home
@@ -149,15 +166,34 @@ void select_task(int rank, int src)
 			printf("Rank %d was told to test communication by %d\n", rank, src);
 			break;
 
-		//Run sample simulation
+		//Run montcar simulation
 		case 3:
 		{
-			struct sample strc = (struct sample) {0,0,0};
+			struct montcar strc = (struct montcar) {0.0,0,0};
 			
 			MPI_Recv(&strc, 1, mpi_struct, src, tag, MPI_COMM_WORLD, &status);
 
-			//Test: out = 1000 + in
-			strc.out = strc.in + 1000;
+			srand(time(NULL));
+
+			printf("Running a m.c. sim!\n");
+
+			strc.hits = 0;
+			for(int i = 0; i < strc.num_sims; i++)
+			{
+				double x = ((double) rand()) / ((double) RAND_MAX);
+				double y = ((double) rand()) / ((double) RAND_MAX);
+
+				if(x*x+y*y <= 1)
+				{
+					strc.hits++;
+				}
+			}
+
+			double pi = 4.0 * (((double)strc.hits) /((double) strc.num_sims)); //for some reason this is necessary
+			strc.out = pi;
+
+			if (DEBUG == 1) printf("For this sim: Num hits: %d => Pi est: %f\n", strc.hits, pi);
+
 			MPI_Send(&strc, 1, mpi_struct, src, 0, MPI_COMM_WORLD); //send struct
 
 			break;
@@ -205,6 +241,7 @@ void go_to_work(int rank, int master_rank)
 	}
 	else
 	{
+		if(DEBUG == 1) printf("Rank %d is going to wait for a task!\n", rank);
 		select_task(rank, 0);
 	}
 
